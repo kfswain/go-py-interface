@@ -17,12 +17,20 @@ func main() {
 	C.Py_Initialize()
 	defer C.Py_Finalize()
 
-	start := time.Now()
-	loadPyFuncAndGetNumber("testfile", "number")
-	end := time.Now()
-	fmt.Printf("Python took %v \n", end.Sub(start))
+	for i := range 10 {
+		start := time.Now()
+		loadPyFuncAndGetNumber("testfile", "number")
+		end := time.Now()
+		fmt.Printf("Python took %v \n; iteration: %v \n", end.Sub(start), i)
+	}
+
 	fmt.Println(getPodNameViaCConversion())
-	getPodNameViaPyFunc()
+	for i := range 10 {
+		start := time.Now()
+		getPodNameViaPyFunc()
+		end := time.Now()
+		fmt.Printf("Python with a param took %v \n; iteration: %v \n", end.Sub(start), i)
+	}
 }
 
 func loadPyFuncAndGetNumber(moduleName, funcName string) {
@@ -55,13 +63,30 @@ func loadPyFunc(moduleName, funcName string) *C.PyObject {
 	return fn
 }
 
+func callPyFuncWithParam() {
+	fn := loadPyFunc("testfile", "paramTester")
+	tuple := C.PyTuple_New(1)
+	cLong := C.long(43)
+	C.PyTuple_SetItem(tuple, 0, C.PyLong_FromLong(cLong))
+
+	result := C.PyObject_CallObject(fn, tuple)
+
+	cLong = C.PyLong_AsLong(result)
+	fmt.Println(cLong)
+}
+
 func getPodNameViaPyFunc() string {
-	fn := loadPyFunc("testfile", "printPodMetrics")
-	//cMetrics := podMetricsToC(podMetrics[0])
-	pM := podMetrics[1]
-	pyMetrics := (*C.PyObject)(unsafe.Pointer(&pM))
-	result := C.PyObject_CallObject(fn, pyMetrics)
-	fmt.Println(result)
+	fn := loadPyFunc("testfile", "stringParam")
+	tuple := C.PyTuple_New(1)
+	cString := C.CString("I said:")
+	pyString := C.PyUnicode_FromString(cString)
+	defer C.free(unsafe.Pointer(cString))
+	// defer C.Py_DECREF(pyString)
+	C.PyTuple_SetItem(tuple, 0, pyString)
+	result := C.PyObject_CallObject(fn, tuple)
+
+	tempString := C.PyUnicode_AsUTF8(result)
+	fmt.Println(C.GoString(tempString))
 	return "test"
 }
 
