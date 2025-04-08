@@ -13,34 +13,51 @@ import (
 	"unsafe"
 )
 
+// TODO: Check mem leaks (I think I need to deref all the pyobjects that are created in go)
+// TODO: May be able to remove the C 'glue' code file altogether and just use cgo calls
+
 func main() {
 	C.Py_Initialize()
 	defer C.Py_Finalize()
 
-	for i := range 10 {
-		start := time.Now()
-		loadPyFuncAndGetNumber("testfile", "number")
-		end := time.Now()
-		fmt.Printf("Python took %v \n; iteration: %v \n", end.Sub(start), i)
-	}
+	loadPyFunc("testfile", "selectPod")
 
-	fmt.Println(getPodNameViaCConversion())
+	var list []*Result
 	for i := range 10 {
 		start := time.Now()
-		getPodNameViaPyFunc()
+		list = scorePodsViaPython(podMetrics)
 		end := time.Now()
-		fmt.Printf("Python with a param took %v \n; iteration: %v \n", end.Sub(start), i)
+		fmt.Printf("Python took %v\nIteration: %v\n", end.Sub(start), i)
+	}
+	for _, score := range list {
+		fmt.Printf("Pod: %v, Score: %v\n", score.PodName, score.Score)
 	}
 }
 
-func loadPyFuncAndGetNumber(moduleName, funcName string) {
+func scorePodsViaPython(metrics []*Metrics) []*Result {
+	tuple := C.PyTuple_New(1)
+	pyList := podMetricsToPyObject(metrics)
+	C.PyTuple_SetItem(tuple, 0, pyList)
 
+	resultList := callPyFuncWithParam("testfile", "selectPod", tuple)
+
+	finalList := []*Result{}
+	for i := range len(metrics) {
+		tuple := C.PyList_GetItem(resultList, C.Py_ssize_t(i))
+		pyPodName := C.PyTuple_GetItem(tuple, 0)
+		tempString := C.PyUnicode_AsUTF8(pyPodName)
+		podName := C.GoString(tempString)
+
+		pyScore := C.PyTuple_GetItem(tuple, 1)
+		score := C.PyLong_AsLong(pyScore)
+		finalList = append(finalList, &Result{PodName: podName, Score: int(score)})
+	}
+	return finalList
+}
+
+func callPyFuncWithParam(moduleName, funcName string, tuple *C.PyObject) *C.PyObject {
 	fn := loadPyFunc(moduleName, funcName)
-
-	result := C.PyObject_CallObject(fn, nil)
-
-	cLong := C.PyLong_AsLong(result)
-	fmt.Println(cLong)
+	return C.PyObject_CallObject(fn, tuple)
 }
 
 func loadPyFunc(moduleName, funcName string) *C.PyObject {
@@ -63,52 +80,63 @@ func loadPyFunc(moduleName, funcName string) *C.PyObject {
 	return fn
 }
 
-func callPyFuncWithParam() {
-	fn := loadPyFunc("testfile", "paramTester")
-	tuple := C.PyTuple_New(1)
-	cLong := C.long(43)
-	C.PyTuple_SetItem(tuple, 0, C.PyLong_FromLong(cLong))
+func podMetricsToPyObject(metrics []*Metrics) *C.PyObject {
+	podLen := len(metrics)
 
-	result := C.PyObject_CallObject(fn, tuple)
+	// Init list with len of pods to prevent superfluous array creation on appends.
+	pyList := C.PyList_New(C.Py_ssize_t(podLen))
 
-	cLong = C.PyLong_AsLong(result)
-	fmt.Println(cLong)
-}
+	// Convert dict keys to PyString
+	// Can probably just do this once at start up w/all the keys
+	podKey := C.CString("pod_name")
+	defer C.free(unsafe.Pointer(podKey))
+	podNameKey := C.PyUnicode_FromString(podKey)
 
-func getPodNameViaPyFunc() string {
-	fn := loadPyFunc("testfile", "stringParam")
-	tuple := C.PyTuple_New(1)
-	cString := C.CString("I said:")
-	pyString := C.PyUnicode_FromString(cString)
-	defer C.free(unsafe.Pointer(cString))
-	// defer C.Py_DECREF(pyString)
-	C.PyTuple_SetItem(tuple, 0, pyString)
-	result := C.PyObject_CallObject(fn, tuple)
+	adapterKey := C.CString("adapters")
+	defer C.free(unsafe.Pointer(adapterKey))
+	pyAdapterKey := C.PyUnicode_FromString(adapterKey)
 
-	tempString := C.PyUnicode_AsUTF8(result)
-	fmt.Println(C.GoString(tempString))
-	return "test"
-}
+	kvCacheUtilKey := C.CString("kv_cache_util")
+	defer C.free(unsafe.Pointer(kvCacheUtilKey))
+	pyKVCacheUtilKey := C.PyUnicode_FromString(kvCacheUtilKey)
 
-func podMetricsToC(podMetric *Metrics) *C.struct_Metrics {
-	cMetrics := &C.struct_Metrics{}
+	qCountKey := C.CString("queue_count")
+	defer C.free(unsafe.Pointer(qCountKey))
+	pyQCountKey := C.PyUnicode_FromString(qCountKey)
 
-	cMetrics.PodName = C.CString(podMetrics[0].PodName)
-	defer C.free(unsafe.Pointer(cMetrics.PodName))
+	for i, pod := range metrics {
+		// Initialize py dict
+		pyPodMetrics := C.PyDict_New()
 
-	cMetrics.KVCacheUtil = C.float(podMetrics[0].KVCacheUtil)
-	cMetrics.QueueCount = C.int(podMetrics[0].QueueCount)
+		// Convert PodName value to Py
+		cString := C.CString(pod.PodName)
+		defer C.free(unsafe.Pointer(cString))
+		pyPodName := C.PyUnicode_FromString(cString)
+		C.PyDict_SetItem(pyPodMetrics, podNameKey, pyPodName)
 
-	return cMetrics
-}
+		// Convert Adapters to PyList
+		pyAdapterList := C.PyList_New(C.Py_ssize_t(len(pod.Adapters)))
+		for j, adapter := range pod.Adapters {
+			cAdapterString := C.CString(adapter)
+			defer C.free(unsafe.Pointer(cAdapterString))
+			pyAdapter := C.PyUnicode_FromString(cAdapterString)
+			C.PyList_SetItem(pyAdapterList, C.Py_ssize_t(j), pyAdapter)
+		}
+		C.PyDict_SetItem(pyPodMetrics, pyAdapterKey, pyAdapterList)
 
-// This is just to prove out how to convert a go struct to C.
-// Unfortunately we cant just pass a pointer, as Go strings and C *char are not compatible types,
-// and so must be explicitly converted using C.CString
-func getPodNameViaCConversion() string {
-	cMetrics := podMetricsToC(podMetrics[0])
-	podName := C.capture_struct(cMetrics)
-	return C.GoString(podName)
+		// Convert KVCacheUtil to Py
+		pyKVCacheUtil := C.PyFloat_FromDouble(C.double(pod.KVCacheUtil))
+		C.PyDict_SetItem(pyPodMetrics, pyKVCacheUtilKey, pyKVCacheUtil)
+
+		// Convert Queue Count to Py
+		pyQCount := C.PyLong_FromLong(C.long(pod.QueueCount))
+		C.PyDict_SetItem(pyPodMetrics, pyQCountKey, pyQCount)
+
+		// Set the podMetric to the appropriate index
+		C.PyList_SetItem(pyList, C.Py_ssize_t(i), pyPodMetrics)
+	}
+
+	return pyList
 }
 
 var (
@@ -152,6 +180,11 @@ var (
 type Metrics struct {
 	PodName     string
 	Adapters    []string
-	KVCacheUtil float32
-	QueueCount  int
+	KVCacheUtil float64
+	QueueCount  int64
+}
+
+type Result struct {
+	PodName string
+	Score   int
 }

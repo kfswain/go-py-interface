@@ -1,15 +1,15 @@
+import math
 
 
-def number():
-    return 17
+def selectPod(pods):
+    ret_list = []
+    for pod in pods:
+        score = 0
+        score += int(math.log(pod["kv_cache_util"])) * 10
+        score += pod["queue_count"] * -10_000
 
-def printPodMetrics(podMetrics):
-    return podMetrics.KVCacheUtil
+        ret_list.append((pod["pod_name"], score))
+        
+    ret_list = sorted(ret_list, key=lambda tup: tup[1], reverse=True)
 
-def paramTester(myNum):
-    return myNum + 7
-
-
-def stringParam(myStr):
-    print(myStr + "proof of demise")
-    return myStr + " hi mom"
+    return ret_list
