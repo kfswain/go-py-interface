@@ -13,5 +13,6 @@ struct Metrics {
 
 PyObject *load_func(const char *module_name, char *func_name);
 char * capture_struct(struct Metrics *podMetrics);
+void py_decref(PyObject *obj);
 
 #endif // GLUE_H
